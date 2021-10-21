@@ -52,6 +52,9 @@ pub struct Router {
 
     // 处理之后的过滤器
     after_fileters: Vec<Route>,
+
+    // 是否忽略路径后面的斜线，默认忽略
+    has_slash: bool,
 }
 
 impl Router {
@@ -61,8 +64,14 @@ impl Router {
     fn add(&mut self, method: Method, path: String, handler: Handler) {
         assert!(path.len() > 0);
 
-        let route = Route::new(method, path.to_owned(), handler, None);
+        let route = Route::new(method, path.to_owned(), handler, None, self.has_slash);
+
         self.routes.push(route);
+    }
+
+    /// 区分路径最后的斜线，默认不区分
+    pub fn has_slash(&mut self) {
+        self.has_slash = true;
     }
 }
 
@@ -74,35 +83,47 @@ pub struct RouterGroup<'a> {
 impl<'a> RouterGroup<'a> {
     fn new(path: &str, router: &'a mut Router) -> Self {
         Self {
-            path: path.to_lowercase(),
+            path: path.to_string(),
             router: router,
         }
     }
 
-    fn concat_path(&self, path1: &str, path2: &str) -> String {
-        // 两个路径除去斜杠之后，必须不为空
-        assert!(path1.replace("/", "").len() > 0 && path2.replace("/", "").len() > 0);
-        let mut new_path = path1.to_string();
-        if &path1[path1.len() - 1..] == "/" && &path2[0..1] == "/" {
-            // 防止路径连接的时候产生两个斜杠
-            new_path = path1.to_string() + &path2[1..];
-        } else if &path1[path1.len() - 1..] != "/" && &path2[0..1] != "/" {
-            // 前后连接处都没有 斜线的情况，就在中间加一个斜线
-            new_path = path1.to_string() + "/" + &path2[1..];
-        } else {
-            new_path += path2;
+    /// 处理两个地址相加，防止地址相加出现两个斜线或没有斜线
+    fn concat_path(path1: &str, path2: &str) -> String {
+        // 两个路径除去斜杠之后的长度
+        let l1 = path1.replace("/", "").len();
+        let l2 = path2.replace("/", "").len();
+
+        if l1 == 0 && l2 > 0 {
+            // 如果前面的地址为空，返回第二个地址
+            return path2.to_string();
+        } else if l2 == 0 && l1 > 0 {
+            // 如果后面的地址为空，返回第一个
+            return path1.to_string();
+        } else if l1 == 0 && l2 == 0 {
+            return "".to_string();
         }
-        new_path
+
+        match (&path1[path1.len() - 1..], &path2[0..1]) {
+            // 两个斜线就去掉一个
+            ("/", "/") => path1.to_string() + &path2[1..],
+
+            // 没有斜线就添加一个
+            (p1, p2) if p1 != "/" && p2 != "/" => path1.to_string() + "/" + path2,
+
+            // 一个斜线就直接连起来
+            _ => path1.to_string() + path2,
+        }
     }
 
     fn add(&mut self, method: Method, path: &str, handler: Handler) {
-        let path = self.concat_path(self.path.as_str(), path);
+        let path = Self::concat_path(self.path.as_str(), path);
 
         self.router.add(method, path, handler);
     }
 
     pub fn group(&mut self, path: &str) -> RouterGroup {
-        let path = self.concat_path(self.path.as_str(), path);
+        let path = Self::concat_path(self.path.as_str(), path);
         RouterGroup::new(path.as_str(), self.router)
     }
 }
@@ -124,40 +145,119 @@ struct Route {
 
     // 处理函数
     handler: Handler,
+
+    // 是否保留路径最后的斜线
+    has_slash: bool,
 }
 
 impl Route {
-    fn new(method: Method, path: String, handler: Handler, name: Option<String>) -> Self {
-        // let path = path.replace("//", "/");
+    fn new(
+        method: Method,
+        path: String,
+        handler: Handler,
+        name: Option<String>,
+        has_slash: bool,
+    ) -> Self {
+        // 如果忽不保留路径最后的斜线，就去掉，否则就不变
+        let path = if !has_slash && !path.is_empty() && &path[path.len() - 1..] == "/" {
+            path[..path.len() - 1].to_string()
+        } else {
+            path
+        };
+
+        /*
+            /admin/:name/:id
+            /admin/:name:str/:id:int
+            /admin/:name:([^/]+)/:id:(\d+)
+        */
+
+        let re = Regex::new(path.as_str()).unwrap();
         Self {
             method,
-            path: path.to_lowercase(),
+            path: path.clone(),
             name,
-            re: Regex::new(path.as_str()).unwrap(),
+            re,
             handler,
+            has_slash,
         }
+    }
+
+    /// 把路由转换成，命名组正则表达式
+    ///
+    /// 例如把 /admin/:name:([^/]+)/:id:(\d+)
+    /// 转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
+    ///
+    fn path2regex(path: &str) -> String {
+        /*
+            把     /admin/:name:([^/]+)/:id:(\d+)
+            转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
+        */
+
+        let mut p = String::new();
+
+        let re = Regex::new(r#"^:(?P<name>[a-zA-a_]{1}[a-zA-Z_0-9]*?):\((?P<reg>.*)\)$"#).unwrap();
+
+        for node in path.split("/") {
+            if node.is_empty() {
+                continue;
+            }
+            println!("{}", node);
+            if re.is_match(node) {
+                p += re
+                    .replace(node, "/(?P<${name}>${reg})")
+                    .to_string()
+                    .as_str();
+            } else {
+                p += "/";
+                p += node;
+            }
+        }
+        // 最后如果有 / 也要加上
+        if &path[path.len() - 1..] == "/" {
+            p += "/";
+        }
+
+        p
     }
 }
 
 #[cfg(test)]
 mod tests {
 
+    use regex::Regex;
+
+    use crate::router::Route;
+
     use super::Method;
-    use super::Route;
     use super::Router;
+    use super::RouterGroup;
+
+    #[test]
+    fn test_concat() {
+        assert_eq!("a/b".to_string(), RouterGroup::concat_path("a/", "/b"));
+        assert_eq!("a/b".to_string(), RouterGroup::concat_path("a", "/b"));
+        assert_eq!("a/b".to_string(), RouterGroup::concat_path("a/", "b"));
+        assert_eq!("a/b".to_string(), RouterGroup::concat_path("a", "b"));
+        assert_eq!("a".to_string(), RouterGroup::concat_path("a", ""));
+        assert_eq!("".to_string(), RouterGroup::concat_path("", ""));
+        assert_eq!("b".to_string(), RouterGroup::concat_path("", "b"));
+    }
 
     #[test]
     fn test_router() {
         let mut r = Router::default();
+        r.has_slash();
         let mut g = r.group("/v1");
         {
-            g.add("get".into(), "admin/:name:(.*?)", |c| {});
-            g.add("get".into(), "/admin/login1", |c| {});
+            g.add("get".into(), "admin/:name:(.*?)", |mut c| {
+                c += "x";
+            });
+            g.add("get".into(), "/admin/login1/", |c| {});
 
             let mut g1 = g.group("/test1");
             {
-                g1.add("get".into(), "admin/login", |c| {});
-                g1.add("get".into(), "/admin/login1", |c| {});
+                g1.add("get".into(), "admin/login/", |c| {});
+                g1.add("get".into(), "/admin/login1/", |c| {});
             }
         }
 
@@ -176,5 +276,31 @@ mod tests {
         for v in r.routes {
             println!("{:?}", v);
         }
+    }
+
+    #[test]
+    fn test_regex() {
+        let re = Regex::new(r#"/admin/(?P<name>.*+?)/info/(?P<id>\d+?)/name/"#).unwrap();
+        let data = "/admin/zhangsan/info/123/name/";
+        let v = re.captures(data).unwrap();
+        let r = v.name("name").unwrap();
+        println!("{:?}", r);
+        println!("{:?}", &data[r.start()..r.end()]);
+        let r = v.name("id").unwrap();
+        println!("{:?}", r);
+        println!("{:?}", &data[r.start()..r.end()]);
+    }
+
+    #[test]
+    fn test_path2regex() {
+        /*
+        把     /admin/:name:([^/]+)/:id:(\d+)
+            转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
+        */
+
+        
+        let s = r#"/admin/:name:(.*+?)/info/:id:(\d+?)/name/"#;
+        let p = Route::path2regex(s);
+        println!("{}", p);
     }
 }
