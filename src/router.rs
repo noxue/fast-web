@@ -58,7 +58,9 @@ impl Router {
     pub fn group(&mut self, path: &str) -> RouterGroup {
         RouterGroup::new(path, self)
     }
-    pub fn add(&mut self, method: Method, path: String, handler: Handler) {
+    fn add(&mut self, method: Method, path: String, handler: Handler) {
+        assert!(path.len() > 0);
+
         let route = Route::new(method, path.to_owned(), handler, None);
         self.routes.push(route);
     }
@@ -77,12 +79,31 @@ impl<'a> RouterGroup<'a> {
         }
     }
 
-    pub fn add(&mut self, method: Method, path: &str, handler: Handler) {
-        self.router.add(method, self.path.clone() + path, handler);
+    fn concat_path(&self, path1: &str, path2: &str) -> String {
+        // 两个路径除去斜杠之后，必须不为空
+        assert!(path1.replace("/", "").len() > 0 && path2.replace("/", "").len() > 0);
+        let mut new_path = path1.to_string();
+        if &path1[path1.len() - 1..] == "/" && &path2[0..1] == "/" {
+            // 防止路径连接的时候产生两个斜杠
+            new_path = path1.to_string() + &path2[1..];
+        } else if &path1[path1.len() - 1..] != "/" && &path2[0..1] != "/" {
+            // 前后连接处都没有 斜线的情况，就在中间加一个斜线
+            new_path = path1.to_string() + "/" + &path2[1..];
+        } else {
+            new_path += path2;
+        }
+        new_path
+    }
+
+    fn add(&mut self, method: Method, path: &str, handler: Handler) {
+        let path = self.concat_path(self.path.as_str(), path);
+
+        self.router.add(method, path, handler);
     }
 
     pub fn group(&mut self, path: &str) -> RouterGroup {
-        RouterGroup::new((self.path.clone() + path).as_str(), self.router)
+        let path = self.concat_path(self.path.as_str(), path);
+        RouterGroup::new(path.as_str(), self.router)
     }
 }
 
@@ -107,7 +128,7 @@ struct Route {
 
 impl Route {
     fn new(method: Method, path: String, handler: Handler, name: Option<String>) -> Self {
-        let path = path.replace("//", "/");
+        // let path = path.replace("//", "/");
         Self {
             method,
             path: path.to_lowercase(),
@@ -121,8 +142,6 @@ impl Route {
 #[cfg(test)]
 mod tests {
 
-    use regex::Regex;
-
     use super::Method;
     use super::Route;
     use super::Router;
@@ -130,14 +149,14 @@ mod tests {
     #[test]
     fn test_router() {
         let mut r = Router::default();
-        let mut g = r.group("/v1/");
+        let mut g = r.group("/v1");
         {
-            g.add("get".into(), "/admin/(.*?)", |c| {});
+            g.add("get".into(), "admin/:name:(.*?)", |c| {});
             g.add("get".into(), "/admin/login1", |c| {});
 
-            let mut g1 = g.group("/test1/");
+            let mut g1 = g.group("/test1");
             {
-                g1.add("get".into(), "/admin/login", |c| {});
+                g1.add("get".into(), "admin/login", |c| {});
                 g1.add("get".into(), "/admin/login1", |c| {});
             }
         }
