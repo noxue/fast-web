@@ -2,12 +2,12 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::{debug, error, info, trace, warn};
-use urlencoding::decode;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{convert::Infallible, net::SocketAddr};
+use urlencoding::decode;
 
 use regex::Regex;
 
@@ -57,24 +57,16 @@ pub struct Context {
     queries: HashMap<String, String>,
 }
 
-pub trait ParamParse {
-    type Item;
-    fn param(&self, name: &str) -> Option<Self::Item>
-    where
-        Self::Item: FromStr,
-        <Self::Item as FromStr>::Err: Debug;
-}
-
-impl ParamParse for Context {
-    type Item = String;
-
+impl Context {
     /// 获取路由规则中的命名参数值
-    fn param(&self, name: &str) -> Option<Self::Item>
+    pub fn param<T>(&self, name: &str) -> Option<T>
     where
-        Self::Item: FromStr,
-        <Self::Item as FromStr>::Err: Debug,
+        T: FromStr,
+        <T as FromStr>::Err: Debug,
     {
-        self.params.get(name.into()).map(|v| v.parse().unwrap())
+        self.params
+            .get(name.into())
+            .map(|v| v.as_str().parse().unwrap())
     }
 }
 
@@ -156,6 +148,8 @@ impl Router {
 
             // 路由表信息
             let router: Arc<Router> = Arc::new(self);
+
+            debug!("路由表：{:#?}", router.clone());
 
             // 创建service处理每个请求
             let make_service = make_service_fn(move |conn: &AddrStream| {
@@ -589,10 +583,12 @@ impl Route {
 
                 let type_reg = Self::type_to_regex(tp);
                 p += format!("/:{}:({})", name, type_reg).as_str();
-            } else if &node[0..1] == ":" {
+            } else if &node[0..1] == ":" && &node[node.len() - 1..] != ")" {
                 // 如果不匹配，以 : 开头，表示没写类型，默认匹配任意字符串
-                p = p + "/" + node + r":(\w+)";
+                // 也就是这种情况 /:name/
+                p = p + "/" + node + r#":([\w\-%_\.~:;'"@=+,]+)"#;
             } else {
+                // 自定义正则就不改变
                 p = p + "/" + node;
             }
         }
@@ -732,9 +728,9 @@ mod tests {
 
     #[test]
     fn test_path_param_to_regex() {
-        let path = "/user/:id:u32/:page:u32";
+        let path = "/user/:id:(.*)/:page:u32";
         let p = Route::path_param_type_to_regex(path);
-        assert_eq!(r"/user/:id:(\d{1,10})/:page:(\d{1,10})", p.as_str());
+        assert_eq!(r"/user/:id:(.*)/:page:(\d{1,10})", p.as_str());
     }
 
     #[test]
