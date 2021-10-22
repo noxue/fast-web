@@ -1,7 +1,8 @@
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
+use urlencoding::decode;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
@@ -123,9 +124,14 @@ impl Router {
                 trace!("路由规则:{:?}", r);
                 if let Some(c) = r.re.captures(req.uri().path()) {
                     for r in &r.param_names {
-                        context
-                            .params
-                            .insert(r.into(), c.name(r.as_str()).unwrap().as_str().into());
+                        match decode(c.name(r.as_str()).unwrap().as_str()) {
+                            Ok(value) => {
+                                context.params.insert(r.into(), value.to_string());
+                            }
+                            Err(e) => {
+                                warn!("路由参数值urldecode解码出错：{:?}", e)
+                            }
+                        }
                     }
                 }
 
