@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use regex::Regex;
 
 /// 包含了请求的所有信息以及用户自定义信息
@@ -6,8 +8,8 @@ type Context = String;
 /// 请求处理函数
 type Handler = fn(Context);
 
-#[derive(Debug)]
-enum Method {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Method {
     TRACE,
     HEAD,
     GET,
@@ -61,8 +63,8 @@ impl Router {
     pub fn group(&mut self, path: &str) -> RouterGroup {
         RouterGroup::new(path, self)
     }
-    fn add(&mut self, method: Method, path: String, handler: Handler) {
-        assert!(path.len() > 0);
+    fn add(&mut self, method: Method, path: &str, handler: Handler) {
+        // assert!(path.len() > 0);
 
         let route = Route::new(method, path.to_owned(), handler, None, self.has_slash);
 
@@ -73,6 +75,71 @@ impl Router {
     pub fn has_slash(&mut self) {
         self.has_slash = true;
     }
+
+    fn match_route(&self, method: Method, path: &str) -> Option<&Route> {
+        for route in &self.routes {
+            if method == route.method && route.re.is_match(path) {
+                return Some(route);
+            }
+        }
+        None
+    }
+
+    /// 添加前置中间件
+    pub fn before(&mut self, method: Method, path: &str, handler: Handler) {
+        let route = Route::new(method, path.to_owned(), handler, None, self.has_slash);
+
+        self.before_fileters.push(route);
+    }
+
+    /// 添加后置中间件
+    pub fn after(&mut self, method: Method, path: &str, handler: Handler) {
+        let route = Route::new(method, path.to_owned(), handler, None, self.has_slash);
+
+        self.after_fileters.push(route);
+    }
+
+    /// 封装各类请求
+    pub fn get(&mut self, path: &str, handler: Handler) {
+        self.add(Method::GET, path, handler);
+    }
+
+    pub fn post(&mut self, path: &str, handler: Handler) {
+        self.add(Method::POST, path, handler);
+    }
+
+    pub fn trace(&mut self, path: &str, handler: Handler) {
+        self.add(Method::TRACE, path, handler);
+    }
+
+    pub fn head(&mut self, path: &str, handler: Handler) {
+        self.add(Method::HEAD, path, handler);
+    }
+
+    pub fn put(&mut self, path: &str, handler: Handler) {
+        self.add(Method::PUT, path, handler);
+    }
+
+    pub fn patch(&mut self, path: &str, handler: Handler) {
+        self.add(Method::PATCH, path, handler);
+    }
+
+    pub fn delete(&mut self, path: &str, handler: Handler) {
+        self.add(Method::DELETE, path, handler);
+    }
+
+    pub fn options(&mut self, path: &str, handler: Handler) {
+        self.add(Method::OPTIONS, path, handler);
+    }
+
+    pub fn any(&mut self, path: &str, handler: Handler) {
+        self.add(Method::ANY, path, handler);
+    }
+}
+
+struct MatchedRoute {
+    params: HashMap<String, String>,
+    hander: Handler,
 }
 
 pub struct RouterGroup<'a> {
@@ -119,12 +186,64 @@ impl<'a> RouterGroup<'a> {
     fn add(&mut self, method: Method, path: &str, handler: Handler) {
         let path = Self::concat_path(self.path.as_str(), path);
 
-        self.router.add(method, path, handler);
+        self.router.add(method, path.as_str(), handler);
     }
 
+    /// 生成一个分组
     pub fn group(&mut self, path: &str) -> RouterGroup {
         let path = Self::concat_path(self.path.as_str(), path);
         RouterGroup::new(path.as_str(), self.router)
+    }
+
+    /// 添加前置处理器
+    pub fn before(&mut self, method: Method, path: &str, handler: Handler) {
+        let path = Self::concat_path(self.path.as_str(), path);
+
+        self.router.before(method, path.as_str(), handler);
+    }
+
+    /// 添加后置处理器
+    pub fn after(&mut self, method: Method, path: &str, handler: Handler) {
+        let path = Self::concat_path(self.path.as_str(), path);
+
+        self.router.after(method, path.as_str(), handler);
+    }
+
+    /// 封装各类请求
+    pub fn get(&mut self, path: &str, handler: Handler) {
+        self.add(Method::GET, path, handler);
+    }
+
+    pub fn post(&mut self, path: &str, handler: Handler) {
+        self.add(Method::POST, path, handler);
+    }
+
+    pub fn trace(&mut self, path: &str, handler: Handler) {
+        self.add(Method::TRACE, path, handler);
+    }
+
+    pub fn head(&mut self, path: &str, handler: Handler) {
+        self.add(Method::HEAD, path, handler);
+    }
+
+    pub fn put(&mut self, path: &str, handler: Handler) {
+        self.add(Method::PUT, path, handler);
+    }
+
+    pub fn patch(&mut self, path: &str, handler: Handler) {
+        self.add(Method::PATCH, path, handler);
+    }
+
+    pub fn delete(&mut self, path: &str, handler: Handler) {
+        self.add(Method::DELETE, path, handler);
+    }
+
+    pub fn options(&mut self, path: &str, handler: Handler) {
+        self.add(Method::OPTIONS, path, handler);
+    }
+
+    pub fn any(&mut self, path: &str, handler: Handler) {
+        self.add(Method::ANY, path, handler);
     }
 }
 
@@ -165,13 +284,9 @@ impl Route {
             path
         };
 
-        /*
-            /admin/:name/:id
-            /admin/:name:str/:id:int
-            /admin/:name:([^/]+)/:id:(\d+)
-        */
-
-        let re = Regex::new(path.as_str()).unwrap();
+        // 路由规则转换成正则
+        let re_str = Self::path2regex(path.as_str());
+        let re = Regex::new(re_str.as_str()).unwrap();
         Self {
             method,
             path: path.clone(),
@@ -188,11 +303,6 @@ impl Route {
     /// 转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
     ///
     fn path2regex(path: &str) -> String {
-        /*
-            把     /admin/:name:([^/]+)/:id:(\d+)
-            转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
-        */
-
         let mut p = String::new();
 
         let re = Regex::new(r#"^:(?P<name>[a-zA-a_]{1}[a-zA-Z_0-9]*?):\((?P<reg>.*)\)$"#).unwrap();
@@ -201,7 +311,7 @@ impl Route {
             if node.is_empty() {
                 continue;
             }
-            println!("{}", node);
+
             if re.is_match(node) {
                 p += re
                     .replace(node, "/(?P<${name}>${reg})")
@@ -284,11 +394,9 @@ mod tests {
         let data = "/admin/zhangsan/info/123/name/";
         let v = re.captures(data).unwrap();
         let r = v.name("name").unwrap();
-        println!("{:?}", r);
-        println!("{:?}", &data[r.start()..r.end()]);
+        println!("{:?}", r.as_str());
         let r = v.name("id").unwrap();
-        println!("{:?}", r);
-        println!("{:?}", &data[r.start()..r.end()]);
+        println!("{:?}", r.as_str());
     }
 
     #[test]
@@ -298,9 +406,32 @@ mod tests {
             转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
         */
 
-        
         let s = r#"/admin/:name:(.*+?)/info/:id:(\d+?)/name/"#;
         let p = Route::path2regex(s);
         println!("{}", p);
+    }
+
+    #[test]
+    fn test_router_match() {
+        let mut r = Router::default();
+        r.has_slash();
+        let mut g = r.group("/v1");
+        {
+            g.get("admin/:name:(\\d+?)", |c| {
+                println!("admin:{}", c);
+            });
+            g.post("/admin/login1/", |c| {
+                println!("login1:{}", c);
+            });
+        }
+
+        let route = r.match_route(Method::GET, "/v1/admin/login1/");
+        (route.unwrap().handler)("xxx".to_string());
+        println!("route:{:?}", &route);
+    }
+
+    #[test]
+    fn test_filters(){
+        let mut r = Router::default();
     }
 }
