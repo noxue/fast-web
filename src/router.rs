@@ -577,6 +577,10 @@ mod tests {
             g.after(Method::ANY, "admin/:name", |c| {
                 println!("after after:{}", c);
             });
+            
+            g.any("admin/:name:i32", |c| {
+                println!("admin:{}", c);
+            });
             g.any("admin/:name", |c| {
                 println!("admin:{}", c);
             });
@@ -590,7 +594,7 @@ mod tests {
 
         // println!("{:#?}", r);
 
-        let route = r.match_route(Method::GET, "/v1/admin/zhangsan/123");
+        let route = r.match_route(Method::GET, "/v1/admin/zhang山/23423");
         println!("route:{:#?}", route);
 
         // (route.as_ref().unwrap().route.unwrap().handler)("xxx".to_string());
