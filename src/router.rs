@@ -14,8 +14,10 @@ use urlencoding::decode;
 
 use regex::Regex;
 
+pub type Ctx<'a> = RefMut<'a, Context>;
+
 /// 请求处理函数
-type Handler = fn(RefMut<Box<Context>>);
+type Handler = fn(&mut Ctx);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Method {
@@ -133,7 +135,7 @@ impl Router {
             context.params = tm;
         }
 
-        let context = RefCell::new(Box::new(context));
+        let context = RefCell::new(context);
 
         trace!("匹配到的路由：{:?}", routes);
 
@@ -141,8 +143,8 @@ impl Router {
         if let Some(r) = routes {
             // 前置过滤器
             for r in r.before {
-                let context1 = context.borrow_mut();
-                (r.handler)(context1);
+                let mut context1 = context.borrow_mut();
+                (r.handler)(&mut context1);
             }
 
             // 控制器函数
@@ -150,14 +152,14 @@ impl Router {
                 trace!("匹配成功:{}", req.uri().path());
                 trace!("路由规则:{:?}", r);
 
-                let context1 = context.borrow_mut();
-                (r.handler)(context1);
+                let mut context1 = context.borrow_mut();
+                (r.handler)(&mut context1);
             }
 
             // 后置过滤器
             for r in r.after {
-                let context1 = context.borrow_mut();
-                (r.handler)(context1);
+                let mut context1 = context.borrow_mut();
+                (r.handler)(&mut context1);
             }
             let a = Response::from(context.take().response);
             return Ok(a);

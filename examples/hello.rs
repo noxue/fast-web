@@ -1,24 +1,31 @@
 use env_logger::{self, Env};
-use fast_router::router::Router;
+use fast_router::router::{Ctx, Router};
 use log::info;
+
+fn test(c:&mut Ctx){
+    c.string("欢迎光临");
+}
 
 fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("debug")).init();
 
     let mut r = Router::default();
 
-    r.get("", |mut c|{
-        c.string("欢迎光临");
+    let mut v = 1;
+    r.before("any".into(), "",  | c|{
+        c.set_header("key", "x");
     });
+
+    r.get("", test);
 
     let mut admin = r.group(":user");
     {
-        admin.before("get".into(), "/:name/", |mut c| {
+        admin.before("get".into(), "/:name/", |c| {
             let user: String = c.param("user").unwrap();
             c.set_header("test", user.as_str());
         });
 
-        admin.get("/:name/:age:u8", |mut c| {
+        admin.get("/:name/:age:u8", |c| {
             let name: String = c.param("name").unwrap();
             let age: i32 = c.param("age").unwrap();
             let user: String = c.param("user").unwrap();
