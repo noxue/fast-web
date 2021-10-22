@@ -1,4 +1,4 @@
-mod router;
+pub mod router;
 
 // use std::{
 //     borrow::BorrowMut,

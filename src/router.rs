@@ -1,9 +1,13 @@
-use std::{collections::HashMap, vec};
+use hyper::server::conn::AddrStream;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server};
+use log::{debug, error, info, trace};
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::{convert::Infallible, net::SocketAddr};
 
 use regex::Regex;
-
-/// 包含了请求的所有信息以及用户自定义信息
-type Context = String;
 
 /// 请求处理函数
 type Handler = fn(Context);
@@ -44,6 +48,20 @@ impl From<&str> for Method {
     }
 }
 
+/// 包含了请求的所有信息以及用户自定义信息
+#[derive(Default)]
+pub struct Context {
+    params: HashMap<String, String>,
+    queries: HashMap<String, String>,
+}
+
+impl Context {
+    /// 获取路由规则中的命名参数值
+    pub fn param(&self, name: &str) -> Option<String> {
+        self.params.get(name.into()).map(|v| v.to_string())
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct Router {
     // 请求处理之前的过滤器
@@ -60,6 +78,97 @@ pub struct Router {
 }
 
 impl Router {
+    async fn shutdown_signal() {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("安装 CTRL+C 处理器失败");
+    }
+
+    /// 静态资源目录
+    pub fn static_dir(path: &str, dir: &str) {}
+
+    /// 静态文件
+    pub fn static_file(uri: &str, filepath: &str) {}
+
+    async fn handle(
+        router: Arc<Router>,
+        addr: SocketAddr,
+        req: Request<Body>,
+    ) -> Result<Response<Body>, Infallible> {
+        let mut context = Context::default();
+
+        //
+        let routes = router.match_route(req.method().as_str().into(), req.uri().path());
+        trace!("匹配到的路由：{:?}", routes);
+
+        // 如果匹配成功，从路由中提取参数的值，保存到context中
+        if let Some(r) = routes {
+            if let Some(r) = r.route {
+                trace!("地址:{}", req.uri().path());
+                trace!("路由规则:{:?}", r);
+                if let Some(c) = r.re.captures(req.uri().path()) {
+                    for r in &r.param_names {
+                        context
+                            .params
+                            .insert(r.into(), c.name(r.as_str()).unwrap().as_str().into());
+                    }
+                }
+
+                (r.handler)(context);
+            }
+        }
+
+
+
+        Ok(Response::new(Body::from("Hello World")))
+    }
+
+    /// 启动服务器
+    pub fn run(self, host: &str) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let addr = match SocketAddr::from_str(host) {
+                Ok(v) => v,
+                Err(_) => {
+                    error!("解析地址失败，请确认格式为(ip:port),你的地址是:{}", host);
+                    return;
+                }
+            };
+
+            // 路由表信息
+            let router: Arc<Router> = Arc::new(self);
+
+            // 创建service处理每个请求
+            let make_service = make_service_fn(move |conn: &AddrStream| {
+                // 客户端地址信息
+                let addr = conn.remote_addr();
+
+                // 每个请求都克隆一个路由信息，传入给处理函数
+                let router = router.clone();
+                let service = service_fn(move |req| Self::handle(router.clone(), addr, req));
+                async move { Ok::<_, Infallible>(service) }
+            });
+            let server = Server::bind(&addr).serve(make_service);
+
+            let graceful = server.with_graceful_shutdown(Self::shutdown_signal());
+
+            info!("启动成功: {}", host);
+
+            if let Err(e) = graceful.await {
+                eprintln!("server error: {}", e);
+            }
+        });
+    }
+
+    /// 启动tls服务器
+    pub fn run_tls(host: &str, pem: &str, key: &str) {}
+}
+
+impl Router {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn group(&mut self, path: &str) -> RouterGroup {
         RouterGroup::new(path, self)
     }
@@ -78,7 +187,6 @@ impl Router {
 
     /// 根据用户请求地址，匹配路由
     fn match_route(&self, method: Method, path: &str) -> Option<MatchedRoute> {
-
         // 如果忽略地址最后的斜线，并且长度不是0，就去掉后面的斜线
         let path = if !self.has_slash && path.len() > 0 && &path[path.len() - 1..] == "/" {
             &path[..path.len() - 1]
@@ -86,13 +194,26 @@ impl Router {
             path
         };
 
+        let mut params: HashMap<String, String> = HashMap::new();
+
+        trace!("查找路由:{}", path);
         // 寻找匹配的路由
         let mut matched_route = None;
         for route in &self.routes {
-            println!("{:?}", route);
             if (method == route.method || route.method == Method::ANY) && route.re.is_match(path) {
                 // 找到匹配的路由
                 matched_route = Some(route);
+
+                // 提取参数
+                let cps = route.re.captures(path).unwrap();
+                trace!("参数列表：{:?}", route.param_names);
+                for name in &route.param_names {
+                    params.insert(
+                        name.to_string(),
+                        cps.name(name.as_str()).unwrap().as_str().into(),
+                    );
+                }
+
                 break;
             }
         }
@@ -103,8 +224,21 @@ impl Router {
             if (method == route.method || route.method == Method::ANY) && route.re.is_match(path) {
                 // 找到匹配的过滤器，可能会有多个
                 before_filters.push(route);
+
+                // 提取参数
+                let cps = route.re.captures(path).unwrap();
+                trace!("参数列表：{:?}", route.param_names);
+                for name in &route.param_names {
+                    params.insert(
+                        name.to_string(),
+                        cps.name(name.as_str()).unwrap().as_str().into(),
+                    );
+                }
             }
         }
+
+        // 输出所有参数值
+        trace!("路径中的参数值：{:?}", params);
 
         // 寻找后置过滤器
         let mut after_filters = vec![];
@@ -124,6 +258,7 @@ impl Router {
             before: before_filters,
             route: matched_route,
             after: after_filters,
+            params: None,
         })
     }
 
@@ -185,6 +320,8 @@ struct MatchedRoute<'a> {
     before: Vec<&'a Route>,
     route: Option<&'a Route>,
     after: Vec<&'a Route>,
+    // 地址参数
+    params: Option<HashMap<String, String>>,
 }
 
 pub struct RouterGroup<'a> {
@@ -312,6 +449,9 @@ struct Route {
 
     // 是否保留路径最后的斜线
     has_slash: bool,
+
+    // 路径中的分组命名
+    param_names: Vec<String>,
 }
 
 impl Route {
@@ -357,9 +497,11 @@ impl Route {
         let path = Self::path_param_type_to_regex(path.as_str());
 
         // 把正则路由转换成 在组名的正则路由
-        let re_str = Self::path2regex(path.as_str());
+        let path_and_names = Self::path2regex(path.as_str());
 
-        let mut re_str = format!("^{}", re_str);
+        trace!("路由参数列表：{:?}", path_and_names.1);
+
+        let mut re_str = format!("^{}", path_and_names.0);
 
         // 如果不是过滤器，需要匹配整个地址
         if !is_filter {
@@ -374,6 +516,7 @@ impl Route {
             re,
             handler,
             has_slash,
+            param_names: path_and_names.1,
         }
     }
 
@@ -404,6 +547,11 @@ impl Route {
     ///
     /// 例如：  /user/:id:usize/:page:usize
     /// 转换成：/user/:id:(\d+)/:page:(\d+)
+    ///
+    /// 返回值说明：
+    /// 返回的第一个值是转换后的正则路由，第二个参数是正则路由中的命名参数名字
+    /// 比如：/:user/:id  第二个参数就返回["user","id"]
+    ///
     #[inline]
     fn path_param_type_to_regex(path: &str) -> String {
         let mut p = String::new();
@@ -419,7 +567,6 @@ impl Route {
                 let cms = re.captures(node).unwrap();
                 let name = cms.name("name").unwrap().as_str();
                 let tp = cms.name("type").unwrap().as_str();
-                println!("name:{}\t type:{}", name, tp);
 
                 let type_reg = Self::type_to_regex(tp);
                 p += format!("/:{}:({})", name, type_reg).as_str();
@@ -444,10 +591,12 @@ impl Route {
     /// 转换成 /admin/(?P<name>[^/]+)/(?P<id>\d+)
     ///
     #[inline]
-    fn path2regex(path: &str) -> String {
+    fn path2regex(path: &str) -> (String, Vec<String>) {
         let mut p = String::new();
 
         let re = Regex::new(r#"^:(?P<name>[a-zA-a_]{1}[a-zA-Z_0-9]*?):\((?P<reg>.*)\)$"#).unwrap();
+
+        let mut names = vec![];
 
         for node in path.split("/") {
             if node.is_empty() {
@@ -455,6 +604,10 @@ impl Route {
             }
 
             if re.is_match(node) {
+                let cms = re.captures(node).unwrap();
+                let name = cms.name("name").unwrap().as_str();
+                names.push(name.to_string());
+
                 p += re
                     .replace(node, "/(?P<${name}>${reg})")
                     .to_string()
@@ -469,7 +622,7 @@ impl Route {
             p += "/";
         }
 
-        p
+        (p, names)
     }
 }
 
@@ -504,9 +657,7 @@ mod tests {
 
         let mut g = r.group("/:v1");
         {
-            g.get("admin/:name:i32", |mut c| {
-                c += "x";
-            });
+            g.get("admin/:name:i32", |mut c| {});
             g.post("/admin/u32/", |c| {});
 
             let mut g1 = g.group("/test1");
@@ -535,13 +686,12 @@ mod tests {
 
     #[test]
     fn test_regex() {
-        let re = Regex::new(r#"^:(?P<name>[a-zA-a_]{1}[a-zA-Z_0-9]*?):(?P<reg>i32|u32|i8|u8|i64|u64|i128|u128|isize|usize|bool)$"#).unwrap();
+        let re = Regex::new(r"^/user/(?P<name>\w+)/(?P<id>\d{1,10})$").unwrap();
 
-        let data = ":name:usize";
-        let v = re.captures(data).unwrap();
+        let v = re.captures("/user/zhangsan/123").unwrap();
         let r = v.name("name").unwrap();
         println!("{:?}", r.as_str());
-        let r = v.name("reg").unwrap();
+        let r = v.name("id").unwrap();
         println!("{:?}", r.as_str());
     }
 
@@ -555,7 +705,10 @@ mod tests {
         let s = r#"/admin/:name:(.*+?)/info/:id:(\d+?)/name/"#;
         let p = Route::path2regex(s);
 
-        assert_eq!(r"/admin/(?P<name>.*+?)/info/(?P<id>\d+?)/name/", p.as_str());
+        assert_eq!(
+            r"/admin/(?P<name>.*+?)/info/(?P<id>\d+?)/name/",
+            p.0.as_str()
+        );
     }
 
     #[test]
@@ -571,31 +724,16 @@ mod tests {
 
         let mut g = r.group("/v1");
         {
-            g.before(Method::ANY, "admin/:name", |c| {
-                println!("before admin:{}", c);
-            });
-            g.after(Method::ANY, "admin/:name", |c| {
-                println!("after after:{}", c);
-            });
-            
-            g.any("admin/:name:i32", |c| {
-                println!("admin:{}", c);
-            });
-            g.any("admin/:name", |c| {
-                println!("admin:{}", c);
-            });
-            g.any("admin/:name/:id:u32", |c| {
-                println!("admin:{}", c);
-            });
-            g.post("/admin/login1/", |c| {
-                println!("login1:{}", c);
-            });
+            g.before(Method::ANY, "admin/:name", |c| {});
+            g.after(Method::ANY, "admin/:name", |c| {});
+
+            g.any("admin/:name:i32", |c| {});
+            g.any("admin/:name", |c| {});
+            g.any("admin/:name/:id:u32", |c| {});
+            g.post("/admin/login1/", |c| {});
         }
 
-        // println!("{:#?}", r);
-
         let route = r.match_route(Method::GET, "/v1/admin/zhang山/23423");
-        println!("route:{:#?}", route);
 
         // (route.as_ref().unwrap().route.unwrap().handler)("xxx".to_string());
     }

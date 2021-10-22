@@ -7,3 +7,13 @@ edition = "2018"
 
 [dependencies]
 regex="1"
+hyper = {version = "0.14", features = ["full"]}
+tokio = {version = "1", features = ["full"]}
+log="0.4"
+
+[dev-dependencies]
+env_logger="0.9"
+
+[[example]]
+name = "hello"
+path = "examples/hello.rs"
