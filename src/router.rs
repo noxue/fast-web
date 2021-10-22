@@ -1,7 +1,7 @@
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, HeaderMap, Request, Response, Server};
+use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode};
 use log::{debug, error, info, trace, warn};
 use std::borrow::BorrowMut;
 use std::cell::{RefCell, RefMut};
@@ -139,7 +139,6 @@ impl Router {
 
         // 如果匹配成功，从路由中提取参数的值，保存到context中
         if let Some(r) = routes {
-
             // 前置过滤器
             for r in r.before {
                 let context1 = context.borrow_mut();
@@ -160,10 +159,14 @@ impl Router {
                 let context1 = context.borrow_mut();
                 (r.handler)(context1);
             }
+            let a = Response::from(context.take().response);
+            return Ok(a);
         }
 
-        let a = Response::from(context.take().response);
-        Ok(a)
+        // 没找到，返回 404
+        let mut res = Response::new(Body::empty());
+        *res.status_mut() = StatusCode::NOT_FOUND;
+        Ok(res)
     }
 
     /// 启动服务器
@@ -652,7 +655,7 @@ impl Route {
             }
         }
         // 最后如果有 / 也要加上
-        if &path[path.len() - 1..] == "/" {
+        if path.len() > 0 && &path[path.len() - 1..] == "/" {
             p += "/";
         }
 
@@ -692,7 +695,7 @@ impl Route {
             }
         }
         // 最后如果有 / 也要加上
-        if &path[path.len() - 1..] == "/" {
+        if path.len() > 0 && &path[path.len() - 1..] == "/" {
             p += "/";
         }
 
