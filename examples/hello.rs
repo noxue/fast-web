@@ -1,5 +1,5 @@
 use env_logger::{self, Env};
-use fast_router::router::Router;
+use fast_router::router::{ParamParse, Router};
 use log::info;
 
 fn main() {
@@ -9,7 +9,9 @@ fn main() {
     let mut admin = r.group("user");
     {
         admin.get(":name/:id:u32", |c| {
+            
             let name = c.param("name").unwrap();
+
             info!("取到参数：{}", name);
         })
     }

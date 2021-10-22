@@ -3,6 +3,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use log::{debug, error, info, trace};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{convert::Infallible, net::SocketAddr};
@@ -55,10 +56,24 @@ pub struct Context {
     queries: HashMap<String, String>,
 }
 
-impl Context {
+pub trait ParamParse {
+    type Item;
+    fn param(&self, name: &str) -> Option<Self::Item>
+    where
+        Self::Item: FromStr,
+        <Self::Item as FromStr>::Err: Debug;
+}
+
+impl ParamParse for Context {
+    type Item = String;
+
     /// 获取路由规则中的命名参数值
-    pub fn param(&self, name: &str) -> Option<String> {
-        self.params.get(name.into()).map(|v| v.to_string())
+    fn param(&self, name: &str) -> Option<Self::Item>
+    where
+        Self::Item: FromStr,
+        <Self::Item as FromStr>::Err: Debug,
+    {
+        self.params.get(name.into()).map(|v| v.parse().unwrap())
     }
 }
 
@@ -117,8 +132,6 @@ impl Router {
                 (r.handler)(context);
             }
         }
-
-
 
         Ok(Response::new(Body::from("Hello World")))
     }
