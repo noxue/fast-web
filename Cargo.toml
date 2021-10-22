@@ -1,19 +1,25 @@
 [package]
+edition = "2018"
 name = "fast-router"
 version = "0.1.0"
-edition = "2018"
+
+description = "简化web开发的一个路由，参考了go语言gin的设计"
+documentation = "http://noxue.com"
+homepage = "http://noxue.com"
+license-file = "LICENSE.txt"
+repository = "https://gitee.com/noxue-com/fast-router"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-regex="1"
 hyper = {version = "0.14", features = ["full"]}
+log = "0.4"
+regex = "1"
 tokio = {version = "1", features = ["full"]}
-urlencoding="2"
-log="0.4"
+urlencoding = "2"
 
 [dev-dependencies]
-env_logger="0.9"
+env_logger = "0.9"
 
 [[example]]
 name = "hello"
