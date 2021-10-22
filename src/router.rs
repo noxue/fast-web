@@ -1,7 +1,10 @@
+use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, HeaderMap, Request, Response, Server};
 use log::{debug, error, info, trace, warn};
+use std::borrow::BorrowMut;
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
@@ -12,7 +15,7 @@ use urlencoding::decode;
 use regex::Regex;
 
 /// 请求处理函数
-type Handler = fn(Context);
+type Handler = fn(RefMut<Box<Context>>);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Method {
@@ -55,6 +58,7 @@ impl From<&str> for Method {
 pub struct Context {
     params: HashMap<String, String>,
     queries: HashMap<String, String>,
+    response: Response<Body>,
 }
 
 impl Context {
@@ -67,6 +71,20 @@ impl Context {
         self.params
             .get(name.into())
             .map(|v| v.as_str().parse().unwrap())
+    }
+}
+
+impl Context {
+    pub fn set_header(&mut self, name: &str, value: &str) {
+        let headers = self.response.headers_mut();
+        headers.insert(
+            HeaderName::from_str(name).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+    }
+    pub fn string(&mut self, data: &str) {
+        self.set_header("content-type", "text/html;charset=utf-8");
+        *self.response.body_mut() = Body::from(data.to_string());
     }
 }
 
@@ -103,35 +121,49 @@ impl Router {
         addr: SocketAddr,
         req: Request<Body>,
     ) -> Result<Response<Body>, Infallible> {
+        let routes = router.match_route(req.method().as_str().into(), req.uri().path());
+
         let mut context = Context::default();
 
-        //
-        let routes = router.match_route(req.method().as_str().into(), req.uri().path());
+        if routes.is_some() {
+            let mut tm = HashMap::new();
+            for (k, v) in routes.as_ref().unwrap().params.as_ref().unwrap() {
+                tm.insert(k.to_string(), v.to_string());
+            }
+            context.params = tm;
+        }
+
+        let context = RefCell::new(Box::new(context));
+
         trace!("匹配到的路由：{:?}", routes);
 
         // 如果匹配成功，从路由中提取参数的值，保存到context中
         if let Some(r) = routes {
-            if let Some(r) = r.route {
-                trace!("地址:{}", req.uri().path());
-                trace!("路由规则:{:?}", r);
-                if let Some(c) = r.re.captures(req.uri().path()) {
-                    for r in &r.param_names {
-                        match decode(c.name(r.as_str()).unwrap().as_str()) {
-                            Ok(value) => {
-                                context.params.insert(r.into(), value.to_string());
-                            }
-                            Err(e) => {
-                                warn!("路由参数值urldecode解码出错：{:?}", e)
-                            }
-                        }
-                    }
-                }
 
-                (r.handler)(context);
+            // 前置过滤器
+            for r in r.before {
+                let context1 = context.borrow_mut();
+                (r.handler)(context1);
+            }
+
+            // 控制器函数
+            if let Some(r) = r.route {
+                trace!("匹配成功:{}", req.uri().path());
+                trace!("路由规则:{:?}", r);
+
+                let context1 = context.borrow_mut();
+                (r.handler)(context1);
+            }
+
+            // 后置过滤器
+            for r in r.after {
+                let context1 = context.borrow_mut();
+                (r.handler)(context1);
             }
         }
 
-        Ok(Response::new(Body::from("Hello World")))
+        let a = Response::from(context.take().response);
+        Ok(a)
     }
 
     /// 启动服务器
@@ -199,6 +231,7 @@ impl Router {
     }
 
     /// 根据用户请求地址，匹配路由
+    /// 并从请求地址中提取命名路由对应的数据
     fn match_route(&self, method: Method, path: &str) -> Option<MatchedRoute> {
         // 如果忽略地址最后的斜线，并且长度不是0，就去掉后面的斜线
         let path = if !self.has_slash && path.len() > 0 && &path[path.len() - 1..] == "/" {
@@ -207,6 +240,11 @@ impl Router {
             path
         };
 
+        // 保存从请求路径中提交的键值对
+        // 比如:
+        //      路由：      /user/:name
+        //      请求地址：  /user/admin
+        // 则保存的是 name=>admin 这样的键值对
         let mut params: HashMap<String, String> = HashMap::new();
 
         trace!("查找路由:{}", path);
@@ -221,10 +259,15 @@ impl Router {
                 let cps = route.re.captures(path).unwrap();
                 trace!("参数列表：{:?}", route.param_names);
                 for name in &route.param_names {
-                    params.insert(
-                        name.to_string(),
-                        cps.name(name.as_str()).unwrap().as_str().into(),
-                    );
+                    // urldecode解码
+                    match decode(cps.name(name.as_str()).unwrap().as_str()) {
+                        Ok(value) => {
+                            params.insert(name.to_string(), value.to_string());
+                        }
+                        Err(e) => {
+                            warn!("路由参数值urldecode解码出错：{:?}", e)
+                        }
+                    }
                 }
 
                 break;
@@ -242,10 +285,14 @@ impl Router {
                 let cps = route.re.captures(path).unwrap();
                 trace!("参数列表：{:?}", route.param_names);
                 for name in &route.param_names {
-                    params.insert(
-                        name.to_string(),
-                        cps.name(name.as_str()).unwrap().as_str().into(),
-                    );
+                    match decode(cps.name(name.as_str()).unwrap().as_str()) {
+                        Ok(value) => {
+                            params.insert(name.to_string(), value.to_string());
+                        }
+                        Err(e) => {
+                            warn!("路由参数值urldecode解码出错：{:?}", e)
+                        }
+                    }
                 }
             }
         }
@@ -271,7 +318,7 @@ impl Router {
             before: before_filters,
             route: matched_route,
             after: after_filters,
-            params: None,
+            params: Some(params),
         })
     }
 
@@ -443,7 +490,6 @@ impl<'a> RouterGroup<'a> {
 }
 
 /// 路径的一个路由信息
-#[derive(Debug)]
 struct Route {
     // 请求方式，不区分大小写
     method: Method,
@@ -465,6 +511,19 @@ struct Route {
 
     // 路径中的分组命名
     param_names: Vec<String>,
+}
+
+impl Debug for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Route")
+            .field("method", &self.method)
+            .field("name", &self.name)
+            .field("path", &self.path)
+            .field("re", &self.re)
+            .field("has_slash", &self.has_slash)
+            .field("param_names", &self.param_names)
+            .finish()
+    }
 }
 
 impl Route {
