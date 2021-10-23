@@ -13,11 +13,13 @@ use urlencoding::decode;
 
 use regex::Regex;
 
+/// 自定义处理函数的参数类型
 pub type Ctx<'a> = RefMut<'a, Context>;
 
 /// 请求处理函数
 type Handler = dyn Fn(&mut Ctx) + 'static + Send + Sync;
 
+/// Http 请求类型
 #[derive(Debug, PartialEq, Eq)]
 pub enum Method {
     TRACE,
@@ -54,12 +56,21 @@ impl From<&str> for Method {
     }
 }
 
-/// 包含了请求的所有信息以及用户自定义信息
+/// 包含了每次请求的所有信息以及用户自定义信息
 #[derive(Default)]
 pub struct Context {
     params: HashMap<String, String>,
     queries: HashMap<String, String>,
     response: Response<Body>,
+
+    // 用于决定是否跳过剩下的前置过滤器
+    is_skip_before_filters: bool,
+
+    // 用于决定是否跳过剩下的后置过滤器
+    is_skip_after_filters: bool,
+
+    // 客户端ip和端口
+    ip: String,
 }
 
 impl Context {
@@ -72,6 +83,33 @@ impl Context {
         self.params
             .get(name.into())
             .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 返回客户端的ip+端口
+    pub fn ip(&self) -> String {
+        self.ip.clone()
+    }
+}
+
+impl Context {
+    /// 在前置过滤器中调用才有效，调用后会跳过后面的所有前置过滤器
+    pub fn skip_before_filters(&mut self) {
+        self.is_skip_before_filters = true;
+    }
+
+    /// 判断是否要跳过剩下的前置过滤器
+    pub fn is_skip_before_filters(&self) -> bool {
+        self.is_skip_before_filters
+    }
+
+    /// 调用后会跳过后面的所有后置过滤器，在请求处理函数和后置过滤器中调用才有效
+    pub fn skip_after_filters(&mut self) {
+        self.is_skip_after_filters = true;
+    }
+
+    /// 判断是否要跳过剩下的后置过滤器
+    pub fn is_skip_after_filters(&self) -> bool {
+        self.is_skip_after_filters
     }
 }
 
@@ -89,6 +127,7 @@ impl Context {
     }
 }
 
+/// 路由
 #[derive(Default, Debug)]
 pub struct Router {
     // 请求处理之前的过滤器
@@ -124,53 +163,80 @@ impl Router {
     ) -> Result<Response<Body>, Infallible> {
         let routes = router.match_route(req.method().as_str().into(), req.uri().path());
 
-        let mut context = Context::default();
-
-        if routes.is_some() {
-            let mut tm = HashMap::new();
-            for (k, v) in routes.as_ref().unwrap().params.as_ref().unwrap() {
-                tm.insert(k.to_string(), v.to_string());
-            }
-            context.params = tm;
+        // 没找到，返回 404
+        if routes.is_none() {
+            let mut res = Response::new(Body::empty());
+            *res.status_mut() = StatusCode::NOT_FOUND;
+            return Ok(res);
         }
-
-        let context = RefCell::new(context);
 
         trace!("匹配到的路由：{:?}", routes);
 
         // 如果匹配成功，从路由中提取参数的值，保存到context中
-        if let Some(r) = routes {
-            // 前置过滤器
-            for r in r.before {
-                let mut context1 = context.borrow_mut();
-                (r.handler)(&mut context1);
+        let r = routes.unwrap();
+        // 每次请求到来就生成一个context,
+        // 他包含着请求信息，传递给每个处理函数处理之后
+        // 把结果保存在Context中，最后返回给客户端
+        let mut context = Context::default();
+
+        // 保存客户端ip和端口
+        context.ip = format!("{}:{}", addr.ip(), addr.port());
+
+        let mut tm = HashMap::new();
+        for (k, v) in r.params.as_ref().unwrap() {
+            tm.insert(k.to_string(), v.to_string());
+        }
+        context.params = tm;
+
+        let context = RefCell::new(context);
+
+        // 前置过滤器
+        for r in r.before {
+            let mut context1 = context.borrow_mut();
+
+            // 如果跳过前置过滤器，就不执行后面的过滤器了
+            if context1.is_skip_before_filters {
+                break;
             }
 
-            // 控制器函数
-            if let Some(r) = r.route {
-                trace!("匹配成功:{}", req.uri().path());
-                trace!("路由规则:{:?}", r);
-
-                let mut context1 = context.borrow_mut();
-                (r.handler)(&mut context1);
-            }
-
-            // 后置过滤器
-            for r in r.after {
-                let mut context1 = context.borrow_mut();
-                (r.handler)(&mut context1);
-            }
-            let a = Response::from(context.take().response);
-            return Ok(a);
+            // 调用过滤器函数
+            (r.handler)(&mut context1);
         }
 
-        // 没找到，返回 404
-        let mut res = Response::new(Body::empty());
-        *res.status_mut() = StatusCode::NOT_FOUND;
-        Ok(res)
+        // 控制器函数
+        if let Some(r) = r.route {
+            trace!("匹配成功:{}", req.uri().path());
+            trace!("路由规则:{:?}", r);
+
+            let mut context1 = context.borrow_mut();
+            (r.handler)(&mut context1);
+        }
+
+        // 后置过滤器
+        for r in r.after {
+            let mut context1 = context.borrow_mut();
+
+            // 如果跳过后置过滤器，就不执行后面的过滤器了
+            if context1.is_skip_after_filters {
+                break;
+            }
+
+            // 调用过滤器函数
+            (r.handler)(&mut context1);
+        }
+        Ok(Response::from(context.take().response))
     }
 
     /// 启动服务器
+    /// ```rust
+    /// use fast_router::router::Router;
+    ///
+    /// fn main(){
+    ///     let mut r = Router::new();
+    ///     r.get("",|c|c.string("hello world"));
+    ///     r.run("127.0.0.1:80");
+    /// }
+    /// ```
     pub fn run(self, host: &str) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -214,10 +280,12 @@ impl Router {
 }
 
 impl Router {
+    /// 创建一个默认的Router
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 路由分组
     pub fn group(&mut self, path: &str) -> RouterGroup {
         RouterGroup::new(path, self)
     }
@@ -445,6 +513,7 @@ struct MatchedRoute<'a> {
     params: Option<HashMap<String, String>>,
 }
 
+/// 路由组，拥有和`Router`类似的方法
 pub struct RouterGroup<'a> {
     path: String,
     router: &'a mut Router,

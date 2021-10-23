@@ -1,6 +1,6 @@
 [package]
 edition = "2018"
-name = "fast-router"
+name = "fast-web"
 version = "0.1.1"
 
 description = "简化web开发的一个路由，参考了go语言gin的设计"

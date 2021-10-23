@@ -1,36 +1,35 @@
-use env_logger::{self, Env};
-use fast_router::router::{Ctx, Router};
-use log::info;
+// use env_logger::{self, Env};
+use fast_web::router::{Ctx, Router};
 
-fn test(c:&mut Ctx){
-    c.string("欢迎光临");
+fn index(c: &mut Ctx) {
+    c.string("欢迎光临，<a href='articles'>点击打开文章列表</a>");
 }
 
 fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("debug")).init();
+    // env_logger::Builder::from_env(Env::default().default_filter_or("debug")).init();
 
     let mut r = Router::default();
 
-    let v = "闭包接收外部参数".to_string();
-    r.before("any".into(), "",  move | c|{
-        c.set_header("key", &v);
+    let v = "1234567".to_string();
+    // 所有页面都会被设置token头
+    r.before("any".into(), "", move |c| {
+        c.set_header("token", &v);
     });
 
-    r.get("", test);
+    // 首页
+    r.get("", index);
 
-    let mut admin = r.group(":user");
+    // 文章分组
+    let mut article = r.group("articles");
     {
-        admin.before("get".into(), "/:name/", |c| {
-            let user: String = c.param("user").unwrap();
-            c.set_header("test", user.as_str());
+        article.get("", |c| {
+            c.string("文章列表<ul><li><a href='/articles/1'>第 1 篇文章</a></li><li><a href='/articles/2/'>第 2 篇文章</a></li></ul>");
         });
 
-        admin.get("/:name/:age:u8", |c| {
-            let name: String = c.param("name").unwrap();
-            let age: i32 = c.param("age").unwrap();
-            let user: String = c.param("user").unwrap();
-            c.string(format!("{} 你好：{}，你已经 {} 岁了", user, name, age).as_str());
-        })
+        article.get("/:id:i32", |c| {
+            let id: i32 = c.param("id").unwrap();
+            c.string(format!("这是第 {} 篇文章", id).as_str());
+        });
     }
 
     r.run("127.0.0.1:80");
