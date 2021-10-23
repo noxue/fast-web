@@ -182,11 +182,15 @@ impl Router {
         // 保存客户端ip和端口
         context.ip = format!("{}:{}", addr.ip(), addr.port());
 
+        // 地址中匹配到的命名参数数据
         let mut tm = HashMap::new();
         for (k, v) in r.params.as_ref().unwrap() {
             tm.insert(k.to_string(), v.to_string());
         }
         context.params = tm;
+
+        // query参数
+        req.uri().query();
 
         let context = RefCell::new(context);
 
