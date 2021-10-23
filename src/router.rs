@@ -197,6 +197,20 @@ impl Context {
 }
 
 impl Context {
+    /// 临时跳转到指定路径，307跳转
+    pub fn redirect(&mut self, url: &str) {
+        self.set_header(header::LOCATION.as_str(), url);
+        *self.response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+        self.is_finished = true;
+    }
+
+    /// 永久跳转到指定的路径，301跳转
+    pub fn redirect_301(&mut self, url: &str) {
+        self.set_header(header::LOCATION.as_str(), url);
+        *self.response.status_mut() = StatusCode::PERMANENT_REDIRECT;
+        self.is_finished = true;
+    }
+
     /// 设置响应头信息
     pub fn set_header(&mut self, name: &str, value: &str) {
         let headers = self.response.headers_mut();
@@ -334,11 +348,15 @@ impl Router {
 
         // 优先处理 form-data 类型数据
 
+        // debug!("headers:{:#?}", context.headers);
+        
         // 处理body中的内容
         if let Ok(body) = hyper::body::to_bytes(req).await {
             let form = form_urlencoded::parse(body.as_ref())
                 .into_owned()
                 .collect::<HashMap<String, String>>();
+
+            debug!("body的数据:{:?}", form);
 
             context.forms = form;
         }

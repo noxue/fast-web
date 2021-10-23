@@ -13,7 +13,8 @@ struct Person {
 }
 
 fn index(c: &mut Ctx) {
-    c.string("欢迎光临，<a href='articles'>点击打开文章列表</a>");
+    c.redirect("me");
+    // c.string("欢迎光临，<a href='articles'>点击打开文章列表</a>");
 }
 
 fn main() {
