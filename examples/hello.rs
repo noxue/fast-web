@@ -11,9 +11,9 @@ fn main() {
 
     let mut r = Router::default();
 
-    let mut v = 1;
-    r.before("any".into(), "",  | c|{
-        c.set_header("key", "x");
+    let v = "闭包接收外部参数".to_string();
+    r.before("any".into(), "",  move | c|{
+        c.set_header("key", &v);
     });
 
     r.get("", test);

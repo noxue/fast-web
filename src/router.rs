@@ -1,9 +1,8 @@
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, HeaderMap, Request, Response, Server, StatusCode};
+use hyper::{Body, Request, Response, Server, StatusCode};
 use log::{debug, error, info, trace, warn};
-use std::borrow::BorrowMut;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -17,7 +16,7 @@ use regex::Regex;
 pub type Ctx<'a> = RefMut<'a, Context>;
 
 /// 请求处理函数
-type Handler = fn(&mut Ctx);
+type Handler = dyn Fn(&mut Ctx) + 'static + Send + Sync;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Method {
@@ -222,13 +221,6 @@ impl Router {
     pub fn group(&mut self, path: &str) -> RouterGroup {
         RouterGroup::new(path, self)
     }
-    fn add(&mut self, method: Method, path: &str, handler: Handler) {
-        // assert!(path.len() > 0);
-
-        let route = Route::new(method, path.to_owned(), handler, None, self.has_slash);
-
-        self.routes.push(route);
-    }
 
     /// 区分路径最后的斜线，默认不区分
     pub fn has_slash(&mut self) {
@@ -326,55 +318,119 @@ impl Router {
             params: Some(params),
         })
     }
+}
+
+impl Router {
+    fn add<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
+        // assert!(path.len() > 0);
+
+        let route = Route::new(
+            method,
+            path.to_owned(),
+            Box::new(handler),
+            None,
+            self.has_slash,
+        );
+
+        self.routes.push(route);
+    }
 
     /// 添加前置中间件
-    pub fn before(&mut self, method: Method, path: &str, handler: Handler) {
-        let route = Route::new_filter(method, path.to_owned(), handler, None, self.has_slash);
+    pub fn before<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
+        let route = Route::new_filter(
+            method,
+            path.to_owned(),
+            Box::new(handler),
+            None,
+            self.has_slash,
+        );
 
         self.before_fileters.push(route);
     }
 
     /// 添加后置中间件
-    pub fn after(&mut self, method: Method, path: &str, handler: Handler) {
-        let route = Route::new_filter(method, path.to_owned(), handler, None, self.has_slash);
+    pub fn after<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
+        let route = Route::new_filter(
+            method,
+            path.to_owned(),
+            Box::new(handler),
+            None,
+            self.has_slash,
+        );
 
         self.after_fileters.push(route);
     }
 
     /// 封装各类请求
-    pub fn get(&mut self, path: &str, handler: Handler) {
+    pub fn get<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::GET, path, handler);
     }
 
-    pub fn post(&mut self, path: &str, handler: Handler) {
+    pub fn post<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::POST, path, handler);
     }
 
-    pub fn trace(&mut self, path: &str, handler: Handler) {
+    pub fn trace<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::TRACE, path, handler);
     }
 
-    pub fn head(&mut self, path: &str, handler: Handler) {
+    pub fn head<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::HEAD, path, handler);
     }
 
-    pub fn put(&mut self, path: &str, handler: Handler) {
+    pub fn put<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::PUT, path, handler);
     }
 
-    pub fn patch(&mut self, path: &str, handler: Handler) {
+    pub fn patch<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::PATCH, path, handler);
     }
 
-    pub fn delete(&mut self, path: &str, handler: Handler) {
+    pub fn delete<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::DELETE, path, handler);
     }
 
-    pub fn options(&mut self, path: &str, handler: Handler) {
+    pub fn options<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::OPTIONS, path, handler);
     }
 
-    pub fn any(&mut self, path: &str, handler: Handler) {
+    pub fn any<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::ANY, path, handler);
     }
 }
@@ -430,10 +486,13 @@ impl<'a> RouterGroup<'a> {
         }
     }
 
-    fn add(&mut self, method: Method, path: &str, handler: Handler) {
+    fn add<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         let path = Self::concat_path(self.path.as_str(), path);
 
-        self.router.add(method, path.as_str(), handler);
+        self.router.add(method, path.as_str(), Box::new(handler));
     }
 
     /// 生成一个分组
@@ -443,53 +502,86 @@ impl<'a> RouterGroup<'a> {
     }
 
     /// 添加前置处理器
-    pub fn before(&mut self, method: Method, path: &str, handler: Handler) {
+    pub fn before<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         let path = Self::concat_path(self.path.as_str(), path);
 
         self.router.before(method, path.as_str(), handler);
     }
 
     /// 添加后置处理器
-    pub fn after(&mut self, method: Method, path: &str, handler: Handler) {
+    pub fn after<F>(&mut self, method: Method, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         let path = Self::concat_path(self.path.as_str(), path);
 
         self.router.after(method, path.as_str(), handler);
     }
 
     /// 封装各类请求
-    pub fn get(&mut self, path: &str, handler: Handler) {
+    pub fn get<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::GET, path, handler);
     }
 
-    pub fn post(&mut self, path: &str, handler: Handler) {
+    pub fn post<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::POST, path, handler);
     }
 
-    pub fn trace(&mut self, path: &str, handler: Handler) {
+    pub fn trace<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::TRACE, path, handler);
     }
 
-    pub fn head(&mut self, path: &str, handler: Handler) {
+    pub fn head<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::HEAD, path, handler);
     }
 
-    pub fn put(&mut self, path: &str, handler: Handler) {
+    pub fn put<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::PUT, path, handler);
     }
 
-    pub fn patch(&mut self, path: &str, handler: Handler) {
+    pub fn patch<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::PATCH, path, handler);
     }
 
-    pub fn delete(&mut self, path: &str, handler: Handler) {
+    pub fn delete<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::DELETE, path, handler);
     }
 
-    pub fn options(&mut self, path: &str, handler: Handler) {
+    pub fn options<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::OPTIONS, path, handler);
     }
 
-    pub fn any(&mut self, path: &str, handler: Handler) {
+    pub fn any<F>(&mut self, path: &str, handler: F)
+    where
+        F: Fn(&mut Ctx) + 'static + Send + Sync,
+    {
         self.add(Method::ANY, path, handler);
     }
 }
@@ -509,7 +601,7 @@ struct Route {
     re: Regex,
 
     // 处理函数
-    handler: Handler,
+    handler: Box<Handler>,
 
     // 是否保留路径最后的斜线
     has_slash: bool,
@@ -536,7 +628,7 @@ impl Route {
     fn new(
         method: Method,
         path: String,
-        handler: Handler,
+        handler: Box<Handler>,
         name: Option<String>,
         has_slash: bool,
     ) -> Self {
@@ -547,7 +639,7 @@ impl Route {
     fn new_filter(
         method: Method,
         path: String,
-        handler: Handler,
+        handler: Box<Handler>,
         name: Option<String>,
         has_slash: bool,
     ) -> Self {
@@ -556,7 +648,7 @@ impl Route {
     fn build(
         method: Method,
         path: String,
-        handler: Handler,
+        handler: Box<Handler>,
         name: Option<String>,
         has_slash: bool,
 
@@ -710,6 +802,7 @@ mod tests {
 
     use std::cell::RefCell;
     use std::cell::RefMut;
+    use std::str::FromStr;
 
     use regex::Regex;
 
@@ -732,26 +825,50 @@ mod tests {
 
     #[test]
     fn test_router() {
+        // let mut r = Router::default();
+        // r.has_slash();
+
+        // r.post("/:user/:id", |c| {});
+
+        // let mut g = r.group("/:v1");
+        // {
+        //     g.get("admin/:name:i32", |mut c| {});
+        //     g.post("/admin/u32/", |c| {});
+
+        //     let mut g1 = g.group("/test1");
+        //     {
+        //         g1.put("admin/login/", |c| {});
+        //         g1.delete("/admin/login1/", |c| {});
+        //     }
+        // }
+
+        // let mut g = r.group("/a1/");
+        // {
+        //     g.add(Method::GET, "/admin/login", |c| {});
+        //     g.add(Method::DELETE, "/admin/login1", |c| {});
+
+        //     let mut g1 = g.group("/test1/");
+        //     {
+        //         g1.add(Method::OPTIONS, "/admin/login", |c| {});
+        //         g1.add(Method::ANY, "/admin/login1", |c| {});
+        //     }
+        // }
+
+        // for v in r.routes {
+        //     println!("{:?}", v);
+        // }
+    }
+
+    #[test]
+    fn test_router1() {
         let mut r = Router::default();
-        r.has_slash();
-
-        r.post("/:user/:id", |c| {});
-
-        let mut g = r.group("/:v1");
-        {
-            g.get("admin/:name:i32", |mut c| {});
-            g.post("/admin/u32/", |c| {});
-
-            let mut g1 = g.group("/test1");
-            {
-                g1.put("admin/login/", |c| {});
-                g1.delete("/admin/login1/", |c| {});
-            }
-        }
 
         let mut g = r.group("/a1/");
         {
-            g.add(Method::GET, "/admin/login", |c| {});
+            let s = "aa".to_string();
+            g.add(Method::GET, "/admin/login", move |c| {
+                let t = &s;
+            });
             g.add(Method::DELETE, "/admin/login1", |c| {});
 
             let mut g1 = g.group("/test1/");
@@ -765,7 +882,6 @@ mod tests {
             println!("{:?}", v);
         }
     }
-
     #[test]
     fn test_regex() {
         let re = Regex::new(r"^/user/(?P<name>\w+)/(?P<id>\d{1,10})$").unwrap();
@@ -802,56 +918,62 @@ mod tests {
 
     #[test]
     fn test_router_match() {
-        let mut r = Router::default();
+        // let mut r = Router::default();
 
-        let mut g = r.group("/v1");
-        {
-            g.before(Method::ANY, "admin/:name", |c| {});
-            g.after(Method::ANY, "admin/:name", |c| {});
+        // let mut g = r.group("/v1");
+        // {
+        //     g.before(Method::ANY, "admin/:name", |c| {});
+        //     g.after(Method::ANY, "admin/:name", |c| {});
 
-            g.any("admin/:name:i32", |c| {});
-            g.any("admin/:name", |c| {});
-            g.any("admin/:name/:id:u32", |c| {});
-            g.post("/admin/login1/", |c| {});
-        }
+        //     g.any("admin/:name:i32", |c| {});
+        //     g.any("admin/:name", |c| {});
+        //     g.any("admin/:name/:id:u32", |c| {});
+        //     g.post("/admin/login1/", |c| {});
+        // }
 
-        let route = r.match_route(Method::GET, "/v1/admin/zhang山/23423");
+        // let route = r.match_route(Method::GET, "/v1/admin/zhang山/23423");
 
-        // (route.as_ref().unwrap().route.unwrap().handler)("xxx".to_string());
+        // // (route.as_ref().unwrap().route.unwrap().handler)("xxx".to_string());
     }
 
     #[test]
     fn test_filters() {}
 
     #[test]
-    fn test_fnonce(){
-        struct Context{
-            data:String,
+    fn test_fnonce() {
+        struct Context {
+            data: String,
         }
 
         type Ctx<'a> = RefMut<'a, Context>;
-        type Hander = dyn FnOnce(Ctx)+'static;
+        type Hander = dyn Fn(Ctx) + 'static;
 
-        struct Route{
-            handler:Box<Hander>
+        struct Route {
+            handler: Box<Hander>,
         }
 
-        fn get<F>(f:F) where F:FnOnce(Ctx)+'static{
+        fn get<F>(f: F)
+        where
+            F: Fn(Ctx) + 'static,
+        {
+            let r = &Route {
+                handler: Box::new(f),
+            };
 
-            let r = Route{handler:Box::new(f)};
-
-        
-            let c = RefCell::new(Context{data:"".to_string()});
+            let c = RefCell::new(Context {
+                data: "".to_string(),
+            });
+            let v = c.borrow_mut();
+            (r.handler)(v);
             let v = c.borrow_mut();
             (r.handler)(v);
         }
 
-        
-
-        let s  = String::new();
+        let s = String::new();
         // let ctx = Context{data:"sss".to_string()};
-        get(move |c|{
-            let v = s;
+        get(move |mut c| {
+            let v = &s;
+            c.data = "xxx".to_string();
         });
     }
 }
