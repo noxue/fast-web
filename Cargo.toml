@@ -3,8 +3,8 @@ edition = "2018"
 name = "fast-web"
 version = "0.1.1"
 
-description = "简化web开发的一个路由，参考了go语言gin的设计"
-documentation = "http://noxue.com"
+description = "简化web开发，降低rust开发web项目的门槛，参考 rust 的 reset-router 和 golang 的 gin 的设计"
+documentation = "https://docs.rs/fast-web"
 homepage = "http://noxue.com"
 license-file = "LICENSE.txt"
 repository = "https://gitee.com/noxue-com/fast-router"
@@ -14,8 +14,13 @@ repository = "https://gitee.com/noxue-com/fast-router"
 [dependencies]
 hyper = {version = "0.14", features = ["full"]}
 log = "0.4"
+multipart = "0.18"
 regex = "1"
+serde = "1.0.129"
+serde_derive = "1"
+serde_json = "1"
 tokio = {version = "1", features = ["full"]}
+url = "2"
 urlencoding = "2"
 
 [dev-dependencies]

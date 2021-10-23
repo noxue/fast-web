@@ -46,5 +46,7 @@
 //! }
 //! ```
 
+pub use serde_derive;
+
 /// 路由功能
 pub mod router;

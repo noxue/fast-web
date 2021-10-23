@@ -1,20 +1,32 @@
-use hyper::header::{HeaderName, HeaderValue};
+use hyper::header::{self, HeaderName, HeaderValue};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::{debug, error, info, trace, warn};
+use regex::Regex;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{convert::Infallible, net::SocketAddr};
+use url::form_urlencoded;
 use urlencoding::decode;
-
-use regex::Regex;
 
 /// 自定义处理函数的参数类型
 pub type Ctx<'a> = RefMut<'a, Context>;
+
+/// json类型的值
+pub type Json = serde_json::Value;
+
+/// 用于把json字符串转json对象值
+pub use serde_json::json;
+
+/// 用于序列化
+pub use serde::Deserialize;
+
+/// 用于反序列化
+pub use serde::Serialize;
 
 /// 请求处理函数
 type Handler = dyn Fn(&mut Ctx) + 'static + Send + Sync;
@@ -59,9 +71,22 @@ impl From<&str> for Method {
 /// 包含了每次请求的所有信息以及用户自定义信息
 #[derive(Default)]
 pub struct Context {
+    headers: HashMap<String, String>,
     params: HashMap<String, String>,
     queries: HashMap<String, String>,
+
+    // form表单提交的数据
+    forms: HashMap<String, String>,
+
+    // 保存自定义信息
+    datas: HashMap<String, String>,
+
     response: Response<Body>,
+
+    // 记录是否处理完毕，根据这个值判断是否还继续往后调用处理函数
+    // 最终也根据这个值决定是否返回404，如果为false则返回404
+    // 在 context.string() 等函数中 需要把这个值设置为 ture
+    is_finished: bool,
 
     // 用于决定是否跳过剩下的前置过滤器
     is_skip_before_filters: bool,
@@ -83,6 +108,59 @@ impl Context {
         self.params
             .get(name.into())
             .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 获取query参数值
+    pub fn query<T>(&self, name: &str) -> Option<T>
+    where
+        T: FromStr,
+        <T as FromStr>::Err: Debug,
+    {
+        self.queries
+            .get(name.into())
+            .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 获取请求头中的参数值
+    pub fn header(&self, name: &str) -> Option<String> {
+        self.headers
+            .get(name.to_lowercase().as_str())
+            .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 获取 form 表单提交值
+    pub fn form<T>(&self, name: &str) -> Option<T>
+    where
+        T: FromStr,
+        <T as FromStr>::Err: Debug,
+    {
+        self.forms
+            .get(name.into())
+            .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 获取自定义数据，前面的处理器可以传给后面的处理器
+    /// 通过 set_data 设置
+    pub fn data<T>(&self, name: &str) -> Option<T>
+    where
+        T: FromStr,
+        <T as FromStr>::Err: Debug,
+    {
+        self.datas
+            .get(name.into())
+            .map(|v| v.as_str().parse().unwrap())
+    }
+
+    /// 获取 header 中的参数值
+    pub fn set_data<T>(&mut self, name: &str, data: T)
+    where
+        T: FromStr + Display,
+        <T as FromStr>::Err: Debug,
+    {
+        if self.datas.contains_key(name) {
+            self.datas.remove(name);
+        }
+        self.datas.insert(name.to_string(), data.to_string());
     }
 
     /// 返回客户端的ip+端口
@@ -111,9 +189,15 @@ impl Context {
     pub fn is_skip_after_filters(&self) -> bool {
         self.is_skip_after_filters
     }
+
+    /// 是否处理完毕
+    pub fn is_finished(&self) -> bool {
+        self.is_finished
+    }
 }
 
 impl Context {
+    /// 设置响应头信息
     pub fn set_header(&mut self, name: &str, value: &str) {
         let headers = self.response.headers_mut();
         headers.insert(
@@ -121,9 +205,45 @@ impl Context {
             HeaderValue::from_str(value).unwrap(),
         );
     }
+
+    /// 返回html格式字符串
     pub fn string(&mut self, data: &str) {
-        self.set_header("content-type", "text/html;charset=utf-8");
+        self.string_raw(data, "text/html; charset=utf-8");
+    }
+
+    /// 返回纯文本格式字符串，不会解析html标签
+    pub fn text(&mut self, data: &str) {
+        self.string_raw(data, "text/plain; charset=utf-8");
+    }
+
+    // 所有输出字符串函数都调用这个函数
+    // 这样就不会忘记设置 is_finished 属性了
+    #[inline]
+    fn string_raw(&mut self, data: &str, content_type: &str) {
+        // 注意：必须设置，表示已经设置了返回内容，处理完毕
+        self.is_finished = true;
+        self.set_header(header::CONTENT_TYPE.as_str(), content_type);
         *self.response.body_mut() = Body::from(data.to_string());
+    }
+
+    /// 返回json格式数据
+    /// 调用格式
+    ///```
+    /// c.json(json!({"name":"admin","age":18}));
+    /// ```
+    /// 如果实现了 `Serialize` Trait 的话可以用下面的方式调用
+    ///
+    /// ```
+    /// let p = Person{name:"admin", age:18};
+    /// c.json(&p);
+    /// ```
+    ///
+    pub fn json<T>(&mut self, json: T)
+    where
+        T: Serialize,
+    {
+        let data = serde_json::to_string(&json).unwrap();
+        self.string_raw(data.as_str(), "application/json; charset=utf-8");
     }
 }
 
@@ -165,15 +285,19 @@ impl Router {
 
         // 没找到，返回 404
         if routes.is_none() {
-            let mut res = Response::new(Body::empty());
-            *res.status_mut() = StatusCode::NOT_FOUND;
-            return Ok(res);
+            let response = Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(Body::from("没匹配到路由"))
+                .unwrap();
+            return Ok(response);
         }
 
         trace!("匹配到的路由：{:?}", routes);
 
         // 如果匹配成功，从路由中提取参数的值，保存到context中
         let r = routes.unwrap();
+
         // 每次请求到来就生成一个context,
         // 他包含着请求信息，传递给每个处理函数处理之后
         // 把结果保存在Context中，最后返回给客户端
@@ -189,17 +313,46 @@ impl Router {
         }
         context.params = tm;
 
-        // query参数
-        req.uri().query();
+        // query参数,分割解码保存到context的queries里面
+        let qs = req.uri().query();
 
+        if let Some(qs) = qs {
+            let queries = form_urlencoded::parse(qs.as_ref())
+                .into_owned()
+                .collect::<HashMap<String, String>>();
+
+            context.queries = queries;
+        }
+
+        // 保存请求头信息
+        for (k, v) in req.headers() {
+            context.headers.insert(
+                k.to_string().to_lowercase(),
+                v.to_str().unwrap_or_default().to_string(),
+            );
+        }
+
+        // 优先处理 form-data 类型数据
+
+        // 处理body中的内容
+        if let Ok(body) = hyper::body::to_bytes(req).await {
+            let form = form_urlencoded::parse(body.as_ref())
+                .into_owned()
+                .collect::<HashMap<String, String>>();
+
+            context.forms = form;
+        }
+
+        // 根据请求类型，把数据放到对应的地方
         let context = RefCell::new(context);
 
         // 前置过滤器
         for r in r.before {
+            // 获取Context的可变引用，用于修改Context中的内容
             let mut context1 = context.borrow_mut();
 
             // 如果跳过前置过滤器，就不执行后面的过滤器了
-            if context1.is_skip_before_filters {
+            if context1.is_skip_before_filters || context1.is_finished() {
                 break;
             }
 
@@ -209,11 +362,15 @@ impl Router {
 
         // 控制器函数
         if let Some(r) = r.route {
-            trace!("匹配成功:{}", req.uri().path());
+            // trace!("匹配成功:{}", req.uri().path());
             trace!("路由规则:{:?}", r);
 
             let mut context1 = context.borrow_mut();
-            (r.handler)(&mut context1);
+
+            // 前置处理器没有直接返回，才调用这个处理器
+            if !context1.is_finished() {
+                (r.handler)(&mut context1);
+            }
         }
 
         // 后置过滤器
@@ -221,14 +378,26 @@ impl Router {
             let mut context1 = context.borrow_mut();
 
             // 如果跳过后置过滤器，就不执行后面的过滤器了
-            if context1.is_skip_after_filters {
+            if context1.is_finished() || context1.is_skip_after_filters {
                 break;
             }
 
             // 调用过滤器函数
             (r.handler)(&mut context1);
         }
-        Ok(Response::from(context.take().response))
+
+        // let context1 = context.borrow_mut();
+
+        if context.borrow_mut().is_finished() {
+            Ok(Response::from(context.take().response))
+        } else {
+            let response = Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(Body::from("没匹配到处理函数"))
+                .unwrap();
+            Ok(response)
+        }
     }
 
     /// 启动服务器
