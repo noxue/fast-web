@@ -708,6 +708,9 @@ impl Route {
 #[cfg(test)]
 mod tests {
 
+    use std::cell::RefCell;
+    use std::cell::RefMut;
+
     use regex::Regex;
 
     use crate::router::Route;
@@ -819,4 +822,36 @@ mod tests {
 
     #[test]
     fn test_filters() {}
+
+    #[test]
+    fn test_fnonce(){
+        struct Context{
+            data:String,
+        }
+
+        type Ctx<'a> = RefMut<'a, Context>;
+        type Hander = dyn FnOnce(Ctx)+'static;
+
+        struct Route{
+            handler:Box<Hander>
+        }
+
+        fn get<F>(f:F) where F:FnOnce(Ctx)+'static{
+
+            let r = Route{handler:Box::new(f)};
+
+        
+            let c = RefCell::new(Context{data:"".to_string()});
+            let v = c.borrow_mut();
+            (r.handler)(v);
+        }
+
+        
+
+        let s  = String::new();
+        // let ctx = Context{data:"sss".to_string()};
+        get(move |c|{
+            let v = s;
+        });
+    }
 }
